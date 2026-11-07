@@ -81,6 +81,23 @@ def test_purchase_shortfall(snapshot):
     assert result["money_left_this_month_after"] == 0
 
 
+def test_espresso_machine_is_not_called_worthwhile_just_because_it_fits(snapshot):
+    result = rules_engine.evaluate_purchase(snapshot, "espresso machine", 123, "Shopping")
+    assert result["verdict"] == "THINK_TWICE"
+    assert result["student_value"] == "low"
+    assert result["student_value_limit"] == 26.4
+    assert "4 times a week" in result["student_value_reason"]
+    assert "campus café" in result["cheaper_student_alternative"]
+
+
+def test_buy_check_has_rules_only_fallback_without_provider(snapshot, monkeypatch):
+    monkeypatch.setattr(agents, "get_client", lambda: (_ for _ in ()).throw(agents.CoachUnavailable("offline")))
+    result = agents.buy_check(snapshot, "espresso machine", 123, "Shopping")
+    assert result["provider"] == "rules_only"
+    assert result["verdict"] == "THINK_TWICE"
+    assert "above 10%" in result["explanation"]
+
+
 def test_trip_cost_breakdown(snapshot):
     trip = rules_engine.simulate_trip(snapshot, "Barcelona", 2, "months", "travel", 3)
     # upfront: 120 flights + 0 visa + 750 deposit + 60 insurance = 930

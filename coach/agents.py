@@ -91,7 +91,10 @@ user knows how reliable the figures are.
 Gently say it's more than they have left, and suggest talking to the bill provider or \
 their bank about a payment plan, or free help from Citizens Advice or StepChange.
 - Verdicts are GO, THINK_TWICE or SKIP. Show them to users as "Go", "Think twice" or \
-"Skip for now", and always use the verdict the tool returned."""
+"Skip for now", and always use the verdict the tool returned.
+- For purchase questions, distinguish affordability from student value. Explain the \
+"student_value_reason" and "cheaper_student_alternative" fields from the rules engine; \
+do not call an expensive durable item worthwhile merely because it fits this month."""
 
 BUY_ADVISOR_SYSTEM = SHARED_RULES + """
 
@@ -405,12 +408,24 @@ def coach_chat(snapshot: dict, message: str, history: list[dict] | None = None,
 def buy_check(snapshot: dict, item: str, price: float, category: str = "Other",
               client: anthropic.Anthropic | None = None) -> dict[str, Any]:
     """Verdict and numbers come from code; Claude adds the explanation."""
-    client = client or get_client()
+    result = rules_engine.evaluate_purchase(snapshot, item, price, category)
+    if client is None:
+        try:
+            client = get_client()
+        except CoachUnavailable:
+            return {
+                **result,
+                "explanation": (
+                    f"{result['student_value_reason']} "
+                    f"{result['cheaper_student_alternative']} "
+                    "This is a deterministic rules-only explanation because the coach provider is unavailable."
+                ),
+                "provider": "rules_only",
+            }
     ctx = AgentContext(snapshot=snapshot)
     question = f"Should I buy this? Item: {item}. Price: £{price:.2f}. Category: {category}."
     explanation = run_agent(client, BUY_ADVISOR, [{"role": "user", "content": question}], ctx)
-    result = ctx.last("evaluate_purchase") or rules_engine.evaluate_purchase(snapshot, item, price, category)
-    return {**result, "explanation": explanation}
+    return {**(ctx.last("evaluate_purchase") or result), "explanation": explanation, "provider": "agent"}
 
 
 def trip_plan(snapshot: dict, destination: str, duration_value: float, duration_unit: str,

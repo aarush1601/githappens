@@ -28,6 +28,30 @@ REPEAT_PURCHASE_LIMIT = 3         # 3+ buys in a non-essential category this wee
 MAX_PRICE = 1_000_000
 MAX_STAY_MONTHS = 120             # 10 years
 MAX_MONTHS_UNTIL_DEPARTURE = 120
+STUDENT_VALUE_LIMIT = 0.10        # durable discretionary buys should stay under 10% of free cash
+
+STUDENT_VALUE_GUIDANCE = {
+    "espresso machine": {
+        "kind": "durable_discretionary",
+        "alternative": "Use the campus café, instant coffee, or a shared kitchen machine first.",
+        "worthwhile_when": "you would use it at least 4 times a week for 12 weeks and still keep your rent buffer",
+    },
+    "coffee machine": {
+        "kind": "durable_discretionary",
+        "alternative": "Use the campus café, instant coffee, or a shared kitchen machine first.",
+        "worthwhile_when": "you would use it at least 4 times a week for 12 weeks and still keep your rent buffer",
+    },
+    "laptop": {
+        "kind": "study_enabler",
+        "alternative": "Check university loan equipment, refurbished models, and student discounts first.",
+        "worthwhile_when": "it is needed for study and the university cannot provide a suitable loan device",
+    },
+    "textbooks": {
+        "kind": "study_enabler",
+        "alternative": "Check the library, used copies, e-books, and module resale groups first.",
+        "worthwhile_when": "the book is required and no free or used copy is available",
+    },
+}
 
 CITY_ALIASES = {
     "nyc": "new york", "new york city": "new york", "manhattan": "new york",
@@ -206,6 +230,18 @@ def evaluate_purchase(snapshot: dict, item: str, price: float, category: str = "
     counts = {k.lower(): v for k, v in snapshot["purchases_per_category_last_7_days"].items()}
     same_category_this_week = counts.get(category.lower(), 0)
     remaining_after = left - price
+    item_key = " ".join((item or "").lower().split())
+    guidance = next(
+        (value for key, value in STUDENT_VALUE_GUIDANCE.items() if key in item_key),
+        None,
+    )
+    student_value_kind = guidance["kind"] if guidance else "ordinary_discretionary"
+    student_value_limit = _money(left * STUDENT_VALUE_LIMIT)
+    student_value_concern = bool(
+        guidance
+        and guidance["kind"] == "durable_discretionary"
+        and price > student_value_limit
+    )
 
     if price > left and essential:
         # Never tell someone to "skip" rent or a bill; flag it so the coach offers support options.
@@ -214,6 +250,8 @@ def evaluate_purchase(snapshot: dict, item: str, price: float, category: str = "
         verdict, reason = "SKIP", "would_dip_into_rent_buffer" if snapshot["rent_buffer"] > 0 else "more_than_money_left_this_month"
     elif essential:
         verdict, reason = "GO", "essential_and_affordable"
+    elif student_value_concern:
+        verdict, reason = "THINK_TWICE", "durable_purchase_over_student_value_limit"
     elif price > 0.5 * left:
         verdict, reason = "THINK_TWICE", "uses_over_half_of_money_left_this_month"
     elif same_category_this_week >= REPEAT_PURCHASE_LIMIT:
@@ -235,6 +273,20 @@ def evaluate_purchase(snapshot: dict, item: str, price: float, category: str = "
         "safe_to_spend_daily_after": _money(max(remaining_after, 0) / days_left),
         "days_of_daily_budget_this_costs": _money(price / safe_daily) if safe_daily > 0 else None,
         "same_category_purchases_last_7_days": same_category_this_week,
+        "student_value": "low" if student_value_concern else ("high" if essential or guidance else "medium"),
+        "student_value_kind": student_value_kind,
+        "student_value_limit": student_value_limit,
+        "student_value_reason": (
+            f"This is above 10% of your money left after protected costs. "
+            f"It may be worthwhile only if {guidance['worthwhile_when']}."
+            if student_value_concern
+            else (
+                f"Student check: {guidance['worthwhile_when']}."
+                if guidance else
+                "Student check: compare the price with repeat use, a student discount, and a cheaper alternative."
+            )
+        ),
+        "cheaper_student_alternative": guidance["alternative"] if guidance else "Check a refurbished, second-hand, library, or campus option first.",
     }
 
 
