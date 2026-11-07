@@ -18,6 +18,7 @@ ESSENTIAL_CATEGORIES = {
 }
 
 RENT_CATEGORIES = {"rent"}
+BILL_CATEGORIES = {"bills", "utilities"}
 
 CURRENCY_BUFFER_RATE = 0.10       # 10% cushion on all trip costs
 LONG_STAY_MONTHS = 6              # inflation multiplier applies above this
@@ -28,30 +29,54 @@ REPEAT_PURCHASE_LIMIT = 3         # 3+ buys in a non-essential category this wee
 MAX_PRICE = 1_000_000
 MAX_STAY_MONTHS = 120             # 10 years
 MAX_MONTHS_UNTIL_DEPARTURE = 120
-STUDENT_VALUE_LIMIT = 0.10        # durable discretionary buys should stay under 10% of free cash
+PAYBACK_GOOD_WEEKS = 8           # pays for itself within ~2 months -> strong value signal
 
-STUDENT_VALUE_GUIDANCE = {
-    "espresso machine": {
-        "kind": "durable_discretionary",
-        "alternative": "Use the campus café, instant coffee, or a shared kitchen machine first.",
-        "worthwhile_when": "you would use it at least 4 times a week for 12 weeks and still keep your rent buffer",
-    },
-    "coffee machine": {
-        "kind": "durable_discretionary",
-        "alternative": "Use the campus café, instant coffee, or a shared kitchen machine first.",
-        "worthwhile_when": "you would use it at least 4 times a week for 12 weeks and still keep your rent buffer",
-    },
-    "laptop": {
-        "kind": "study_enabler",
-        "alternative": "Check university loan equipment, refurbished models, and student discounts first.",
-        "worthwhile_when": "it is needed for study and the university cannot provide a suitable loan device",
-    },
-    "textbooks": {
-        "kind": "study_enabler",
-        "alternative": "Check the library, used copies, e-books, and module resale groups first.",
-        "worthwhile_when": "the book is required and no free or used copy is available",
-    },
+# Typical lifespans and a student rule of thumb per item type. Claude picks the type
+# for any item; the keyword list is only used when Claude is unavailable.
+ITEM_TYPES: dict[str, dict[str, Any]] = {
+    "everyday_essential": {"lifespan_months": 18, "rule_of_thumb": "usually_worth_it",
+                           "hint": "Everyday essentials like walking shoes, a winter coat or bedding protect your health and comfort. For things you use daily, good quality often saves money over time."},
+    "study_or_work_tool": {"lifespan_months": 36, "rule_of_thumb": "usually_worth_it",
+                           "hint": "Things you need for your course or your job usually pay off. Check the library, university loan schemes and refurbished options first."},
+    "health_and_safety": {"lifespan_months": 24, "rule_of_thumb": "usually_worth_it",
+                          "hint": "Health and safety items (glasses, a bike helmet, medicine) are worth prioritising."},
+    "kitchen_gadget": {"lifespan_months": 36, "rule_of_thumb": "usually_not_worth_it",
+                       "hint": "Single-purpose kitchen gadgets are rarely worth it on a student budget, especially with running costs (pods, beans, repairs) and moving between houses. They can make sense if they replace something you already buy often."},
+    "tech_gadget": {"lifespan_months": 36, "rule_of_thumb": "depends",
+                    "hint": "Gadgets are worth it if you'd use them a lot and they replace something, not if they upgrade something that still works."},
+    "clothing_fashion": {"lifespan_months": 18, "rule_of_thumb": "depends",
+                         "hint": "Fashion buys are worth it if you'll wear them often. Trend items rarely are."},
+    "furniture_or_bulky": {"lifespan_months": 48, "rule_of_thumb": "usually_not_worth_it",
+                           "hint": "Bulky items are hard to move between student houses or take home after your course. Second-hand or borrowing is usually better."},
+    "hobby_or_sport": {"lifespan_months": 24, "rule_of_thumb": "depends",
+                       "hint": "Hobby gear is worth it if you already do the hobby regularly. Try borrowing or second-hand first."},
+    "treat_or_experience": {"lifespan_months": 0, "rule_of_thumb": "depends",
+                            "hint": "Treats and experiences are fine in moderation and can be good for wellbeing. Just watch how often they add up."},
+    "other": {"lifespan_months": 24, "rule_of_thumb": "depends",
+              "hint": "Think about how often you'd use it, whether it replaces something you pay for, and whether it can wait."},
 }
+
+_ITEM_TYPE_KEYWORDS = [
+    ("kitchen_gadget", ["espresso", "coffee machine", "air fryer", "blender", "nespresso", "juicer", "toaster", "smoothie maker"]),
+    ("study_or_work_tool", ["textbook", "laptop", "charger", "calculator", "printer", "course book", "work boots", "uniform"]),
+    ("health_and_safety", ["glasses", "helmet", "medicine", "contact lens", "first aid", "dentist"]),
+    ("everyday_essential", ["walking shoes", "trainers", "boots", "winter coat", "coat", "bedding", "duvet", "towel", "backpack", "umbrella"]),
+    ("furniture_or_bulky", ["sofa", "desk", "chair", "tv", "television", "bookcase", "mattress"]),
+    ("tech_gadget", ["headphones", "airpods", "earbuds", "smartwatch", "watch", "tablet", "ipad", "console", "ps5", "xbox", "speaker", "phone"]),
+    ("hobby_or_sport", ["guitar", "gym", "yoga", "bike", "camera", "racket", "football"]),
+    ("treat_or_experience", ["takeaway", "cinema", "concert", "festival", "meal out", "ticket", "night out"]),
+    ("clothing_fashion", ["jacket", "dress", "jeans", "hoodie", "shirt", "top"]),
+]
+
+
+def guess_item_type(item: str) -> str:
+    """Keyword fallback, only used when Claude can't classify the item."""
+    words = f" {' '.join((item or '').lower().split())} "
+    for item_type, keywords in _ITEM_TYPE_KEYWORDS:
+        if any(f" {k}" in words for k in keywords):
+            return item_type
+    return "other"
+
 
 CITY_ALIASES = {
     "nyc": "new york", "new york city": "new york", "manhattan": "new york",
@@ -101,6 +126,7 @@ def build_snapshot(connection, today: date | None = None, profile: dict | None =
     """
     today = today or date.today()
     profile = {k: v for k, v in (profile or {}).items() if v is not None}
+    about_user = profile.pop("about", None)
 
     month_start = today.replace(day=1)
     days_in_month = calendar.monthrange(today.year, today.month)[1]
@@ -114,10 +140,11 @@ def build_snapshot(connection, today: date | None = None, profile: dict | None =
         (min(month_start, thirty_days_ago).isoformat(), today.isoformat()),
     ).fetchall()
 
-    income_month = income_30d = expenses_month = expenses_30d = discretionary_30d = rent_month = 0.0
+    income_month = income_30d = expenses_month = expenses_30d = discretionary_30d = rent_month = bills_month = 0.0
     last_rent: tuple[date, float] | None = None
     earliest: date | None = None
     category_month: dict[str, float] = {}
+    category_30d: dict[str, float] = {}
     category_week_counts: dict[str, int] = {}
 
     for r in rows:
@@ -141,8 +168,11 @@ def build_snapshot(connection, today: date | None = None, profile: dict | None =
             category_month[category] = category_month.get(category, 0) + amount
             if key in RENT_CATEGORIES:
                 rent_month += amount
+            if key in BILL_CATEGORIES:
+                bills_month += amount
         if in_30d:
             expenses_30d += amount
+            category_30d[category] = category_30d.get(category, 0) + amount
             if key not in ESSENTIAL_CATEGORIES:
                 discretionary_30d += amount
             if key in RENT_CATEGORIES and (last_rent is None or tx_date >= last_rent[0]):
@@ -158,6 +188,12 @@ def build_snapshot(connection, today: date | None = None, profile: dict | None =
     # Rent still due this month: if rent hasn't been paid yet this month, protect
     # the last rent amount. If it has been paid, it's already in this month's spending.
     rent_due = last_rent[1] if (last_rent and rent_month == 0) else 0.0
+    # If the user told us their monthly rent and bills, protect whatever hasn't been paid yet.
+    if "monthly_rent" in profile:
+        rent_due = max(float(profile["monthly_rent"]) - rent_month, 0.0)
+    bills_due = max(float(profile.get("monthly_bills", 0)) - bills_month, 0.0)
+    if profile.get("essentials_paid_this_month"):
+        rent_due = bills_due = 0.0
 
     notes = []
     if "monthly_income" in profile:
@@ -172,15 +208,30 @@ def build_snapshot(connection, today: date | None = None, profile: dict | None =
         disposable = income_30d - expenses_30d
         notes.append("No income yet this month, so money left is based on the last 30 days.")
 
-    monthly_expenses = float(profile.get("monthly_expenses", expenses_30d))
+    history_days = (today - earliest).days + 1 if earliest else 0
+    planned = sum(float(profile.get(k, 0)) for k in ("monthly_rent", "monthly_bills", "monthly_everyday"))
+    if "monthly_expenses" in profile:
+        monthly_expenses = float(profile["monthly_expenses"])
+    elif planned and history_days < 21:
+        # Not enough history yet: use what they told us they usually spend.
+        monthly_expenses = max(expenses_30d, planned)
+    else:
+        monthly_expenses = expenses_30d
     rent_buffer = float(profile.get("rent_buffer", rent_due))
     savings = float(profile.get("savings", savings_from_goals))
-    disposable_left = max(disposable - rent_buffer, 0.0)
+    disposable_left = max(disposable - rent_buffer - bills_due, 0.0)
 
-    history_days = (today - earliest).days + 1 if earliest else 0
+    current_balance = profile.get("current_balance")
+    if current_balance is not None:
+        # Never suggest spending more than they actually have right now.
+        from_balance = max(float(current_balance) - rent_buffer - bills_due, 0.0)
+        if from_balance < disposable_left:
+            disposable_left = from_balance
+            notes.append(f"Based on the £{float(current_balance):,.2f} you have right now, after rent and bills still due.")
+
     if monthly_income == 0:
         notes.append("No income recorded, so affordability checks will be very cautious.")
-    if history_days < 21 and "monthly_expenses" not in profile:
+    if history_days < 21 and "monthly_expenses" not in profile and not planned:
         notes.append(f"Only {history_days} days of history, so monthly spending is a rough estimate.")
 
     return {
@@ -192,10 +243,13 @@ def build_snapshot(connection, today: date | None = None, profile: dict | None =
         "monthly_expenses_estimate": _money(monthly_expenses),
         "monthly_discretionary_spend": _money(discretionary_30d),
         "rent_buffer": _money(rent_buffer),
+        "bills_still_due_this_month": _money(bills_due),
+        "current_balance": _money(float(current_balance)) if current_balance is not None else None,
         "disposable_left_this_month": _money(disposable_left),
         "safe_to_spend_daily": _money(disposable_left / days_left),
         "savings": _money(savings),
         "spending_by_category_this_month": {k: _money(v) for k, v in sorted(category_month.items())},
+        "spending_by_category_last_30_days": {k: _money(v) for k, v in sorted(category_30d.items())},
         "purchases_per_category_last_7_days": dict(sorted(category_week_counts.items())),
         "savings_goals": [
             {
@@ -209,6 +263,7 @@ def build_snapshot(connection, today: date | None = None, profile: dict | None =
         "has_data": bool(rows) or "monthly_income" in profile,
         "history_days": history_days,
         "notes": notes,
+        "about_user": about_user,
     }
 
 
@@ -230,18 +285,6 @@ def evaluate_purchase(snapshot: dict, item: str, price: float, category: str = "
     counts = {k.lower(): v for k, v in snapshot["purchases_per_category_last_7_days"].items()}
     same_category_this_week = counts.get(category.lower(), 0)
     remaining_after = left - price
-    item_key = " ".join((item or "").lower().split())
-    guidance = next(
-        (value for key, value in STUDENT_VALUE_GUIDANCE.items() if key in item_key),
-        None,
-    )
-    student_value_kind = guidance["kind"] if guidance else "ordinary_discretionary"
-    student_value_limit = _money(left * STUDENT_VALUE_LIMIT)
-    student_value_concern = bool(
-        guidance
-        and guidance["kind"] == "durable_discretionary"
-        and price > student_value_limit
-    )
 
     if price > left and essential:
         # Never tell someone to "skip" rent or a bill; flag it so the coach offers support options.
@@ -250,8 +293,6 @@ def evaluate_purchase(snapshot: dict, item: str, price: float, category: str = "
         verdict, reason = "SKIP", "would_dip_into_rent_buffer" if snapshot["rent_buffer"] > 0 else "more_than_money_left_this_month"
     elif essential:
         verdict, reason = "GO", "essential_and_affordable"
-    elif student_value_concern:
-        verdict, reason = "THINK_TWICE", "durable_purchase_over_student_value_limit"
     elif price > 0.5 * left:
         verdict, reason = "THINK_TWICE", "uses_over_half_of_money_left_this_month"
     elif same_category_this_week >= REPEAT_PURCHASE_LIMIT:
@@ -268,26 +309,91 @@ def evaluate_purchase(snapshot: dict, item: str, price: float, category: str = "
         "reason_code": reason,
         "money_left_this_month_before": _money(left),
         "money_left_this_month_after": _money(max(remaining_after, 0)),
-        "rent_buffer_shortfall": _money(max(-remaining_after, 0)),
+        "short_by": _money(max(-remaining_after, 0)),
+        "would_use_rent_or_bill_money": remaining_after < 0 and (snapshot["rent_buffer"] + snapshot.get("bills_still_due_this_month", 0)) > 0,
         "safe_to_spend_daily_before": _money(safe_daily),
         "safe_to_spend_daily_after": _money(max(remaining_after, 0) / days_left),
         "days_of_daily_budget_this_costs": _money(price / safe_daily) if safe_daily > 0 else None,
         "same_category_purchases_last_7_days": same_category_this_week,
-        "student_value": "low" if student_value_concern else ("high" if essential or guidance else "medium"),
-        "student_value_kind": student_value_kind,
-        "student_value_limit": student_value_limit,
-        "student_value_reason": (
-            f"This is above 10% of your money left after protected costs. "
-            f"It may be worthwhile only if {guidance['worthwhile_when']}."
-            if student_value_concern
-            else (
-                f"Student check: {guidance['worthwhile_when']}."
-                if guidance else
-                "Student check: compare the price with repeat use, a student discount, and a cheaper alternative."
-            )
-        ),
-        "cheaper_student_alternative": guidance["alternative"] if guidance else "Check a refurbished, second-hand, library, or campus option first.",
     }
+
+
+def assess_value(
+    snapshot: dict,
+    item: str,
+    price: float,
+    item_type: str = "other",
+    uses_per_week: float | None = None,
+    replaces_category: str | None = None,
+    replaces_weekly_spend: float | None = None,
+    replaces_cost_each: float | None = None,
+    replaces_times_per_week: float | None = None,
+) -> dict[str, Any]:
+    """Value-for-money figures for a purchase. The worth-it judgement itself is made by
+    the Buy Advisor using these facts; this function never says "buy" or "don't"."""
+    if not math.isfinite(price) or not 0 < price <= MAX_PRICE:
+        raise ValueError("Price must be a number greater than zero.")
+    if item_type not in ITEM_TYPES:
+        raise ValueError(f"item_type must be one of: {', '.join(ITEM_TYPES)}")
+    if uses_per_week is not None and (not math.isfinite(uses_per_week) or not 0 < uses_per_week <= 100):
+        raise ValueError("uses_per_week must be between 0 and 100.")
+    if replaces_weekly_spend is not None and (not math.isfinite(replaces_weekly_spend) or not 0 < replaces_weekly_spend <= 10_000):
+        raise ValueError("replaces_weekly_spend must be between 0 and 10,000.")
+    if (replaces_cost_each is None) != (replaces_times_per_week is None):
+        raise ValueError("Give both replaces_cost_each and replaces_times_per_week, or neither.")
+    if replaces_cost_each is not None:
+        if not (math.isfinite(replaces_cost_each) and 0 < replaces_cost_each <= 1000
+                and math.isfinite(replaces_times_per_week) and 0 < replaces_times_per_week <= 100):
+            raise ValueError("replaces_cost_each must be 0-1000 and replaces_times_per_week 0-100.")
+
+    info = ITEM_TYPES[item_type]
+    lifespan = info["lifespan_months"]
+    income = snapshot["monthly_income"]
+    left = snapshot["disposable_left_this_month"]
+    result: dict[str, Any] = {
+        "item": item,
+        "price": _money(price),
+        "item_type": item_type,
+        "student_rule_of_thumb": info["rule_of_thumb"],
+        "student_hint": info["hint"],
+        "typical_lifespan_months": lifespan or None,
+        "percent_of_money_left_this_month": round(price / left * 100, 1) if left > 0 else None,
+        "percent_of_monthly_income": round(price / income * 100, 1) if income > 0 else None,
+        "cost_per_use": None,
+        "uses_over_lifespan": None,
+        "replaces_spending": None,
+        "notes": [],
+    }
+
+    if uses_per_week is not None and lifespan:
+        uses = uses_per_week * lifespan * WEEKS_PER_MONTH
+        result["uses_over_lifespan"] = round(uses)
+        result["cost_per_use"] = _money(price / uses)
+    elif uses_per_week is None and lifespan:
+        result["notes"].append("Ask how often they'd use it to work out cost per use.")
+
+    weekly, source = None, None
+    if replaces_weekly_spend is not None:
+        weekly, source = replaces_weekly_spend, "what you told me"
+    elif replaces_cost_each is not None:
+        weekly, source = replaces_cost_each * replaces_times_per_week, "what you told me"
+    elif replaces_category:
+        spend = {k.lower(): v for k, v in snapshot.get("spending_by_category_last_30_days", {}).items()}
+        total = spend.get(replaces_category.strip().lower(), 0.0)
+        if total > 0:
+            weekly, source = total / (30 / 7), f"your {replaces_category} spending in the last 30 days"
+        else:
+            result["notes"].append(f"No {replaces_category} spending in the last 30 days, so it doesn't replace a current habit.")
+    if weekly:
+        weeks = price / weekly
+        result["replaces_spending"] = {
+            "weekly_spend_replaced": _money(weekly),
+            "source": source,
+            "pays_for_itself_in_weeks": round(weeks, 1),
+            "pays_back_quickly": weeks <= PAYBACK_GOOD_WEEKS,
+        }
+        result["notes"].append("Payback ignores running costs like beans, pods, refills or repairs.")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -450,3 +556,99 @@ def simulate_trip(
             "Home rent during the stay is not included.",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Financial Time Travel: future balance and what-if scenarios
+# ---------------------------------------------------------------------------
+
+TIME_TRAVEL_HORIZONS = (1, 12, 60)  # 1 month, 1 year, 5 years
+TIME_TRAVEL_MAX_MONTHS = 60
+
+# Synthetic default amounts (GBP) used when the user doesn't give their own.
+WHAT_IF_SCENARIOS: dict[str, dict[str, Any]] = {
+    "none": {"label": "No change", "kind": "none", "default_amount": 0},
+    "phone_breaks": {"label": "Phone breaks", "kind": "one_off_cost", "default_amount": 250},
+    "laptop_breaks": {"label": "Laptop breaks", "kind": "one_off_cost", "default_amount": 500},
+    "rent_rises": {"label": "Rent rises", "kind": "monthly_cost_increase", "default_amount": 50},
+    "lose_a_shift": {"label": "Lose a shift each week", "kind": "monthly_income_loss_per_weekly_shift", "default_amount": 60},
+    "income_drops_20": {"label": "Income drops 20%", "kind": "income_percent_drop", "default_amount": 20},
+}
+
+
+def project_future(snapshot: dict, scenario: str = "none", amount: float | None = None,
+                   months: int = TIME_TRAVEL_MAX_MONTHS) -> dict[str, Any]:
+    """Project the user's savings balance month by month, with and without a what-if.
+
+    Assumes their current monthly income and spending carry on. No interest, inflation
+    or pay rises are included, so it's a simple "if nothing else changes" view.
+    """
+    if scenario not in WHAT_IF_SCENARIOS:
+        raise ValueError(f"scenario must be one of: {', '.join(WHAT_IF_SCENARIOS)}")
+    if not 1 <= months <= TIME_TRAVEL_MAX_MONTHS:
+        raise ValueError(f"months must be between 1 and {TIME_TRAVEL_MAX_MONTHS}.")
+    info = WHAT_IF_SCENARIOS[scenario]
+    used_default = amount is None
+    amount = float(info["default_amount"] if amount is None else amount)
+    if not math.isfinite(amount) or amount < 0 or amount > MAX_PRICE:
+        raise ValueError("amount must be a positive number.")
+    if info["kind"] == "income_percent_drop" and amount > 100:
+        raise ValueError("Income drop can't be more than 100%.")
+
+    income = snapshot["monthly_income"]
+    spending = snapshot["monthly_expenses_estimate"]
+    essentials = max(spending - snapshot.get("monthly_discretionary_spend", 0.0), 0.0)
+    start = snapshot["savings"]
+
+    one_off = income_change = cost_change = 0.0
+    kind = info["kind"]
+    if kind == "one_off_cost":
+        one_off = amount
+    elif kind == "monthly_cost_increase":
+        cost_change = amount
+    elif kind == "monthly_income_loss_per_weekly_shift":
+        income_change = -amount * WEEKS_PER_MONTH
+    elif kind == "income_percent_drop":
+        income_change = -income * amount / 100
+
+    base_net = income - spending
+    what_if_net = base_net + income_change - cost_change
+
+    def series(net: float, shock: float) -> list[float]:
+        return [_money(start - shock + net * m) for m in range(months + 1)]
+
+    baseline, what_if = series(base_net, 0.0), series(what_if_net, one_off)
+
+    def first_negative(values: list[float]) -> int | None:
+        return next((m for m, v in enumerate(values) if v < 0), None)
+
+    def at(values: list[float]) -> dict[str, float]:
+        return {f"{h}_months": values[h] for h in TIME_TRAVEL_HORIZONS if h <= months}
+
+    result = {
+        "scenario": scenario,
+        "scenario_label": info["label"],
+        "amount_used": _money(amount),
+        "amount_is_default_estimate": used_default and scenario != "none",
+        "starting_savings": _money(start),
+        "monthly_net_now": _money(base_net),
+        "monthly_net_with_what_if": _money(what_if_net),
+        "one_off_cost": _money(one_off),
+        "baseline_balance": at(baseline),
+        "what_if_balance": at(what_if),
+        "difference_after": {k: _money(what_if[int(k.split('_')[0])] - baseline[int(k.split('_')[0])])
+                             for k in at(baseline)},
+        "baseline_runs_out_in_month": first_negative(baseline),
+        "what_if_runs_out_in_month": first_negative(what_if),
+        "months_of_essentials_covered_now": round(start / essentials, 1) if essentials > 0 else None,
+        "monthly_balances": {"baseline": baseline, "what_if": what_if},  # for the Time Travel slider/chart
+        "assumptions": [
+            "Your current monthly income and spending carry on unchanged.",
+            "No interest, inflation or pay rises are included.",
+            "Changes like a rent rise or lost shift are assumed to last for the whole period.",
+        ],
+        "notes": list(snapshot.get("notes", [])),
+    }
+    if result["amount_is_default_estimate"]:
+        result["notes"].append(f"Used a typical amount (£{amount:,.0f}) because none was given.")
+    return result

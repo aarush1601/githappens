@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PocketWise Coach (test chat)</title>
+<title>PennyWise Coach (test chat)</title>
 <style>
   :root { --purple: #6B0FC4; --bg: #f6f3fa; }
   * { box-sizing: border-box; }
@@ -24,11 +24,28 @@
   input { flex: 1; font: inherit; padding: 12px 14px; border: 1px solid #cfc6dd; border-radius: 10px; }
   form button { font: inherit; background: var(--purple); color: #fff; border: 0; border-radius: 10px; padding: 0 20px; cursor: pointer; }
   form button:disabled { opacity: .5; }
+  #tracker { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 20px; background: #efe8f8;
+             border-bottom: 1px solid #e0d6ee; font-size: 15px; }
+  #tracker strong { color: var(--purple); margin-right: 4px; }
+  #tracker input, #tracker select { font: inherit; padding: 6px 10px; border: 1px solid #cfc6dd; border-radius: 8px; }
+  #tracker input[name=item] { flex: 1; min-width: 160px; } #tracker input[name=price] { width: 90px; }
+  #tracker button { font: inherit; background: var(--purple); color: #fff; border: 0; border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+  .WORTH_IT { background: #d9f5e3; color: #11643a; } .DEPENDS { background: #fff1c7; color: #7a5600; } .NOT_WORTH_IT { background: #fde0e0; color: #8a1c1c; }
+  .badge + .badge { margin-left: 6px; }
   footer { text-align: center; font-size: 12px; color: #666; padding: 0 0 10px; background: #fff; }
 </style>
 </head>
 <body>
-<header><h1>PocketWise Coach</h1><button id="reset" type="button">New chat</button></header>
+<header><h1>PennyWise Coach</h1><button id="reset" type="button">New chat</button></header>
+<form id="tracker">
+  <strong>Purchase tracker</strong>
+  <input name="item" placeholder="Item, e.g. espresso machine" required maxlength="200">
+  <input name="price" type="number" step="0.01" min="0.01" placeholder="£" required>
+  <select name="category"><option>Shopping</option><option>Food</option><option>Takeaway</option><option>Transport</option>
+    <option>Entertainment</option><option>Education</option><option>Healthcare</option><option>Bills</option><option>Other</option></select>
+  <label><input type="checkbox" name="planning"> Just thinking about it</label>
+  <button>Log purchase</button>
+</form>
 <div id="log"></div>
 <form id="form"><input id="input" placeholder="Try: Should I buy trainers for £60?" autocomplete="off" autofocus><button>Send</button></form>
 <footer>Guidance, not regulated financial advice. We never approve credit.</footer>
@@ -38,12 +55,14 @@ let history = [];
 const TRAIN = location.pathname === '/train';
 const ENDPOINT = TRAIN ? '/api/train' : '/api/coach';
 if (TRAIN) {
-  document.title = 'PocketWise Coach (training mode)';
-  document.querySelector('header h1').innerHTML = 'PocketWise Coach · Training mode <a href="/api/train/rules" target="_blank" style="color:#fff;font-size:14px;font-weight:400;margin-left:10px">View rules file</a>';
+  document.title = 'PennyWise Coach (training mode)';
+  document.querySelector('header h1').innerHTML = 'PennyWise Coach · Training mode <a href="/api/train/rules" target="_blank" style="color:#fff;font-size:14px;font-weight:400;margin-left:10px">View rules file</a>';
   document.documentElement.style.setProperty('--purple', '#3d0a73');
   input.placeholder = 'Teach a rule, e.g. Always mention student discounts for travel';
 }
 const LABEL = { GO: 'Go', THINK_TWICE: 'Think twice', SKIP: 'Skip for now' };
+const WORTH = { WORTH_IT: 'Worth it', DEPENDS: 'Depends', NOT_WORTH_IT: 'Probably not worth it' };
+if (TRAIN) document.getElementById('tracker').remove();
 
 function add(role, text, extra) {
   const div = document.createElement('div');
@@ -56,12 +75,17 @@ function add(role, text, extra) {
 
 function facts(data) {
   const wrap = document.createElement('div');
-  for (const [key, title] of [['purchase_check', 'Purchase check'], ['trip_plan', 'Trip plan']]) {
+  const badge = (cls, text) => { const b = document.createElement('span'); b.className = 'badge ' + cls; b.textContent = text; wrap.appendChild(b); };
+  if (data.worth_check) badge(data.worth_check.worth_verdict, 'Worth it? ' + WORTH[data.worth_check.worth_verdict]);
+  for (const [key, title] of [['purchase_check', 'Can you afford it?'], ['trip_plan', 'Trip plan']]) {
     const f = data[key]; if (!f) continue;
     const verdict = f.verdict || (f.affordability && f.affordability.verdict);
-    if (verdict) { const b = document.createElement('span'); b.className = 'badge ' + verdict; b.textContent = title + ': ' + LABEL[verdict]; wrap.appendChild(b); }
+    if (verdict) badge(verdict, title + ' ' + LABEL[verdict]);
+  }
+  const shown = Object.fromEntries(['purchase_check', 'value_check', 'worth_check', 'trip_plan'].filter(k => data[k]).map(k => [k, data[k]]));
+  if (Object.keys(shown).length) {
     const d = document.createElement('details'); d.innerHTML = '<summary>Numbers from the rules engine</summary>';
-    const pre = document.createElement('pre'); pre.textContent = JSON.stringify(f, null, 2); d.appendChild(pre); wrap.appendChild(d);
+    const pre = document.createElement('pre'); pre.textContent = JSON.stringify(shown, null, 2); d.appendChild(pre); wrap.appendChild(d);
   }
   return wrap.childNodes.length ? wrap : null;
 }
@@ -83,6 +107,24 @@ form.addEventListener('submit', async (e) => {
   } catch (err) {
     thinking.remove(); add('error', 'Something went wrong: ' + err.message);
   } finally { btn.disabled = false; input.focus(); }
+});
+
+document.getElementById('tracker').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target, btn = f.querySelector('button');
+  const body = { item: f.item.value.trim(), price: parseFloat(f.price.value), category: f.category.value,
+                 status: f.planning.checked ? 'planning' : 'bought' };
+  add('user', (body.status === 'bought' ? 'Logged: ' : 'Thinking about: ') + body.item + ' £' + body.price.toFixed(2));
+  btn.disabled = true; const thinking = add('assistant', 'Looking at this purchase…');
+  try {
+    const res = await fetch('/api/purchase-review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json(); thinking.remove();
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+    add('assistant', data.explanation, facts(data));
+    history = history.concat(data.history);   // keep chatting about it below
+    f.reset(); input.focus();
+  } catch (err) { thinking.remove(); add('error', 'Something went wrong: ' + err.message); }
+  finally { btn.disabled = false; }
 });
 
 document.getElementById('reset').onclick = () => { history = []; log.innerHTML = ''; input.focus(); };

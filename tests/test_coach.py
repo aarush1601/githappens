@@ -77,25 +77,28 @@ def test_purchase_verdicts(snapshot, price, category, verdict):
 
 def test_purchase_shortfall(snapshot):
     result = rules_engine.evaluate_purchase(snapshot, "laptop", 300, "Shopping")
-    assert result["rent_buffer_shortfall"] == 36
+    assert result["short_by"] == 36
+    assert result["would_use_rent_or_bill_money"] is True
     assert result["money_left_this_month_after"] == 0
 
 
-def test_espresso_machine_is_not_called_worthwhile_just_because_it_fits(snapshot):
-    result = rules_engine.evaluate_purchase(snapshot, "espresso machine", 123, "Shopping")
-    assert result["verdict"] == "THINK_TWICE"
-    assert result["student_value"] == "low"
-    assert result["student_value_limit"] == 26.4
-    assert "4 times a week" in result["student_value_reason"]
-    assert "campus café" in result["cheaper_student_alternative"]
+def test_espresso_machine_affordable_but_flagged_as_low_value(snapshot):
+    # Affordability is about money only...
+    assert rules_engine.evaluate_purchase(snapshot, "espresso machine", 123, "Shopping")["verdict"] == "GO"
+    # ...and the value check carries the student warning separately.
+    value = rules_engine.assess_value(snapshot, "espresso machine", 123, "kitchen_gadget")
+    assert value["student_rule_of_thumb"] == "usually_not_worth_it"
+    assert value["percent_of_money_left_this_month"] == 46.6
 
 
 def test_buy_check_has_rules_only_fallback_without_provider(snapshot, monkeypatch):
     monkeypatch.setattr(agents, "get_client", lambda: (_ for _ in ()).throw(agents.CoachUnavailable("offline")))
     result = agents.buy_check(snapshot, "espresso machine", 123, "Shopping")
     assert result["provider"] == "rules_only"
-    assert result["verdict"] == "THINK_TWICE"
-    assert "above 10%" in result["explanation"]
+    assert result["purchase_check"]["verdict"] == "GO"
+    assert result["value_check"]["item_type"] == "kitchen_gadget"
+    assert result["worth_check"] is None
+    assert "rarely worth it" in result["explanation"]
 
 
 def test_trip_cost_breakdown(snapshot):
@@ -210,7 +213,7 @@ def test_tool_error_is_reported_not_raised(snapshot):
 def test_buy_check_falls_back_to_code_verdict(snapshot):
     client = FakeClient({"You are the Buy Advisor": [([text("Skip for now.")], "end_turn")]})
     out = agents.buy_check(snapshot, "laptop", 300, "Shopping", client=client)
-    assert out["verdict"] == "SKIP"
+    assert out["purchase_check"]["verdict"] == "SKIP"
     assert out["explanation"] == "Skip for now."
 
 

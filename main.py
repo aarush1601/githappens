@@ -1,6 +1,7 @@
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+import sqlite3
 from datetime import date
 from collections import defaultdict
 
@@ -354,7 +355,7 @@ def calculate_emergency_fund(data: EmergencyFundInput):
 # -----------------------------
 
 import os
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import Field
@@ -380,12 +381,50 @@ app.add_middleware(
 )
 
 
+class AboutUser(BaseModel):
+    """Who the user is, from the welcome page plus facts the bots have saved."""
+    name: str = Field("", max_length=60)
+    persona: Literal["international_student", "student", "gig_worker", "single_parent",
+                     "pensioner", "new_migrant", "working", "other"] = "other"
+    income_type: Literal["fixed", "irregular"] = "fixed"
+    home_country: str = Field("", max_length=60)
+    goal: str = Field("", max_length=200)
+    facts: list[Annotated[str, Field(max_length=300)]] = Field([], max_length=40)
+
+
 class Profile(BaseModel):
-    """Optional overrides when the database doesn't have the full picture yet."""
+    """What the user told us. Numbers override what's derived from transactions."""
     monthly_income: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
     monthly_expenses: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
+    monthly_rent: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
+    monthly_bills: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
+    monthly_everyday: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
     rent_buffer: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
     savings: Optional[float] = Field(None, ge=0, le=10_000_000, allow_inf_nan=False)
+    current_balance: Optional[float] = Field(None, ge=-1_000_000, le=10_000_000, allow_inf_nan=False)
+    essentials_paid_this_month: Optional[bool] = None  # rent and bills for this month already paid
+    about: Optional[AboutUser] = None
+
+
+class ClientTransaction(BaseModel):
+    amount: float = Field(..., ge=0, le=1_000_000, allow_inf_nan=False)  # pounds
+    type: Literal["income", "expense"]
+    category: str = Field("Other", max_length=50)
+    name: str = Field("", max_length=200)
+    date: date
+
+
+class ClientGoal(BaseModel):
+    name: str = Field("", max_length=200)
+    target: float = Field(..., ge=0, le=10_000_000, allow_inf_nan=False)
+    saved: float = Field(0, ge=0, le=10_000_000, allow_inf_nan=False)
+
+
+class ClientData(BaseModel):
+    """The website's own data (it keeps it in the browser). When sent, the coach uses
+    this instead of the server database, so its numbers match what's on screen."""
+    transactions: list[ClientTransaction] = Field([], max_length=5000)
+    goals: list[ClientGoal] = Field([], max_length=200)
 
 
 class ChatMessage(BaseModel):
@@ -397,6 +436,7 @@ class CoachRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     history: list[ChatMessage] = Field([], max_length=40)
     profile: Optional[Profile] = None
+    data: Optional[ClientData] = None
 
 
 class BuyCheckRequest(BaseModel):
@@ -404,6 +444,7 @@ class BuyCheckRequest(BaseModel):
     price: float = Field(..., gt=0, le=1_000_000, allow_inf_nan=False)
     category: str = Field("Other", max_length=50)
     profile: Optional[Profile] = None
+    data: Optional[ClientData] = None
 
 
 class TripPlanRequest(BaseModel):
@@ -414,10 +455,31 @@ class TripPlanRequest(BaseModel):
     months_until_departure: int = Field(3, ge=0, le=120)
     housing_tier: Literal["standard", "budget"] = "standard"
     profile: Optional[Profile] = None
+    data: Optional[ClientData] = None
 
 
-def _snapshot(profile: Optional[Profile]) -> dict:
-    connection = get_connection()
+def _client_connection(data: ClientData) -> sqlite3.Connection:
+    """In-memory database holding the website's data, read by the same snapshot code."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("CREATE TABLE transactions (id INTEGER PRIMARY KEY, amount REAL, transaction_type TEXT,"
+                       " category TEXT, description TEXT, transaction_date TEXT)")
+    connection.execute("CREATE TABLE savings_goals (id INTEGER PRIMARY KEY, goal_name TEXT, target_amount REAL,"
+                       " current_amount REAL, target_date TEXT)")
+    connection.executemany(
+        "INSERT INTO transactions (amount, transaction_type, category, description, transaction_date)"
+        " VALUES (?, ?, ?, ?, ?)",
+        [(t.amount, t.type, t.category, t.name, t.date.isoformat()) for t in data.transactions],
+    )
+    connection.executemany(
+        "INSERT INTO savings_goals (goal_name, target_amount, current_amount, target_date) VALUES (?, ?, ?, '')",
+        [(g.name, g.target, g.saved) for g in data.goals],
+    )
+    return connection
+
+
+def _snapshot(profile: Optional[Profile], data: Optional[ClientData] = None) -> dict:
+    connection = _client_connection(data) if data is not None else get_connection()
     try:
         return rules_engine.build_snapshot(
             connection, profile=profile.model_dump() if profile else None
@@ -451,7 +513,7 @@ def coach(request: CoachRequest):
     """Chat with the Coach. It hands off to the Buy Advisor / Trip Planner as needed."""
     return _coach_call(
         agents.coach_chat,
-        _snapshot(request.profile),
+        _snapshot(request.profile, request.data),
         request.message,
         [m.model_dump() for m in request.history],
     )
@@ -462,11 +524,70 @@ def buy_check(request: BuyCheckRequest):
     """'Should I buy this?' Verdict from the rules engine, explanation from Claude."""
     return _coach_call(
         agents.buy_check,
-        _snapshot(request.profile),
+        _snapshot(request.profile, request.data),
         request.item,
         request.price,
         request.category,
     )
+
+
+class PurchaseReviewRequest(BaseModel):
+    item: str = Field(..., min_length=1, max_length=200)
+    price: float = Field(..., gt=0, le=1_000_000, allow_inf_nan=False)
+    category: str = Field("Shopping", max_length=50)
+    status: Literal["bought", "planning"] = "bought"
+    log_transaction: bool = True
+    profile: Optional[Profile] = None
+    data: Optional[ClientData] = None
+
+
+@app.post("/api/purchase-review")
+def purchase_review(request: PurchaseReviewRequest):
+    """Purchase tracker: log a purchase and get the coach's opening message about it.
+
+    Send the returned `history` with follow-up messages to /api/coach to keep chatting.
+    """
+    # Snapshot first, so a purchase that's being logged isn't counted twice.
+    snapshot = _snapshot(request.profile, request.data)
+    result = _coach_call(
+        agents.purchase_review, snapshot, request.item, request.price, request.category, request.status
+    )
+    result["transaction_id"] = None
+    if request.status == "bought" and request.log_transaction:
+        connection = get_connection()
+        try:
+            cursor = connection.execute(
+                "INSERT INTO transactions (amount, transaction_type, category, description, transaction_date)"
+                " VALUES (?, 'expense', ?, ?, ?)",
+                (request.price, request.category, request.item, date.today().isoformat()),
+            )
+            connection.commit()
+            result["transaction_id"] = cursor.lastrowid
+        finally:
+            connection.close()
+    return result
+
+
+class TimeTravelRequest(BaseModel):
+    scenario: Literal["none", "phone_breaks", "laptop_breaks", "rent_rises", "lose_a_shift", "income_drops_20"] = "none"
+    amount: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
+    months: int = Field(60, ge=1, le=60)
+    profile: Optional[Profile] = None
+    data: Optional[ClientData] = None
+
+
+@app.post("/api/time-travel")
+def time_travel(request: TimeTravelRequest):
+    """Financial Time Travel: balance at 1 month / 1 year / 5 years, with an optional what-if.
+
+    No AI call. `monthly_balances` has one value per month for the slider and chart.
+    """
+    try:
+        return rules_engine.project_future(
+            _snapshot(request.profile, request.data), request.scenario, request.amount, request.months
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/trip-plan")
@@ -474,7 +595,7 @@ def trip_plan(request: TripPlanRequest):
     """Trip / study-abroad simulator. Costs from the rules engine, explanation from Claude."""
     return _coach_call(
         agents.trip_plan,
-        _snapshot(request.profile),
+        _snapshot(request.profile, request.data),
         request.destination,
         request.duration_value,
         request.duration_unit,

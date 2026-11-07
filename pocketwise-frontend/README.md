@@ -1,4 +1,4 @@
-# Pocketwise
+# PennyWise
 
 A beginner-friendly, frontend-only personal finance app built with React, JavaScript and Vite. The app currently runs on local browser data and includes API service modules ready for a future backend.
 
