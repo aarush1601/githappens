@@ -1,0 +1,2 @@
+const API_BASE_URL=import.meta.env.VITE_API_BASE_URL||'';
+export async function apiRequest(path,{token,...options}={}){if(!API_BASE_URL)throw new Error('API is not configured. Add VITE_API_BASE_URL to your environment.');const response=await fetch(`${API_BASE_URL}${path}`,{...options,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`} :{}),...options.headers}});if(!response.ok){const detail=await response.text();throw new Error(detail||`Request failed (${response.status})`)}return response.status===204?null:response.json()}

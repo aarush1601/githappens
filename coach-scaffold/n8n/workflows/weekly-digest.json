@@ -1,0 +1,93 @@
+{
+  "name": "Weekly digest (multilingual)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "weekly-digest",
+        "responseMode": "responseNode"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "weekly-digest"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$input.first().json.body||{};\nconst L=['en','ar','hi','zh','ur','es'].includes(b.lang)?b.lang:'en';\nconst T={\n  en: `Your week: you spent £${b.spent}. Safe to spend: £${b.safePerDay}/day. Tip: ${b.tip}`,\n  ar: `أسبوعك: أنفقت £${b.spent}. المبلغ الآمن للإنفاق: £${b.safePerDay} يوميًا. نصيحة: ${b.tip}`,\n  hi: `आपका सप्ताह: आपने £${b.spent} खर्च किए। सुरक्षित खर्च: £${b.safePerDay}/दिन। सुझाव: ${b.tip}`,\n  zh: `本周你花了£${b.spent}。每天安全花费：£${b.safePerDay}。提示：${b.tip}`,\n  ur: `آپ کا ہفتہ: آپ نے £${b.spent} خرچ کیے۔ روزانہ محفوظ خرچ: £${b.safePerDay}۔ مشورہ: ${b.tip}`,\n  es: `Tu semana: gastaste £${b.spent}. Gasto seguro: £${b.safePerDay}/día. Consejo: ${b.tip}`\n};\nconst D={\"en\": \"Guidance, not regulated financial advice.\", \"ar\": \"إرشاد وليس نصيحة مالية منظمة.\", \"hi\": \"मार्गदर्शन, विनियमित वित्तीय सलाह नहीं।\", \"zh\": \"仅为指导，非受监管的财务建议。\", \"ur\": \"رہنمائی، منظم مالی مشورہ نہیں۔\", \"es\": \"Orientación, no asesoramiento financiero regulado.\"};\nreturn [{json:{message:T[L]+' '+D[L],lang:L}}];"
+      },
+      "name": "Build multilingual message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Send to user (swap for Email/WhatsApp/Telegram node)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, message: $('Build multilingual message').first().json.message }) }}"
+      },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        780,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Build multilingual message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build multilingual message": {
+      "main": [
+        [
+          {
+            "node": "Send to user (swap for Email/WhatsApp/Telegram node)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to user (swap for Email/WhatsApp/Telegram node)": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
