@@ -1,2 +1,5 @@
 fastapi
 uvicorn
+anthropic>=2.6
+pytest
+httpx

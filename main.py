@@ -346,3 +346,186 @@ def calculate_emergency_fund(data: EmergencyFundInput):
         "remaining_for_six_month_target": remaining_for_six,
         "message": "A useful starting target is 3–6 months of essential expenses."
     }
+
+
+# -----------------------------
+# AI COACH AGENTS
+# (Coach + Buy Advisor + Trip Planner, see coach/agents.py)
+# -----------------------------
+
+import os
+from typing import Literal, Optional
+
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import Field
+
+from coach import agents, rules_engine
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_request, exc: RequestValidationError):
+    """Return validation errors without echoing the input (NaN/Infinity can't be sent as JSON)."""
+    errors = [{"loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get(
+        "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class Profile(BaseModel):
+    """Optional overrides when the database doesn't have the full picture yet."""
+    monthly_income: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
+    monthly_expenses: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
+    rent_buffer: Optional[float] = Field(None, ge=0, le=1_000_000, allow_inf_nan=False)
+    savings: Optional[float] = Field(None, ge=0, le=10_000_000, allow_inf_nan=False)
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., max_length=8000)
+
+
+class CoachRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+    history: list[ChatMessage] = Field([], max_length=40)
+    profile: Optional[Profile] = None
+
+
+class BuyCheckRequest(BaseModel):
+    item: str = Field(..., min_length=1, max_length=200)
+    price: float = Field(..., gt=0, le=1_000_000, allow_inf_nan=False)
+    category: str = Field("Other", max_length=50)
+    profile: Optional[Profile] = None
+
+
+class TripPlanRequest(BaseModel):
+    destination: str = Field(..., min_length=1, max_length=100)
+    duration_value: float = Field(..., gt=0, le=520, allow_inf_nan=False)
+    duration_unit: Literal["weeks", "months", "years"] = "weeks"
+    purpose: Literal["travel", "study"] = "travel"
+    months_until_departure: int = Field(3, ge=0, le=120)
+    housing_tier: Literal["standard", "budget"] = "standard"
+    profile: Optional[Profile] = None
+
+
+def _snapshot(profile: Optional[Profile]) -> dict:
+    connection = get_connection()
+    try:
+        return rules_engine.build_snapshot(
+            connection, profile=profile.model_dump() if profile else None
+        )
+    finally:
+        connection.close()
+
+
+def _coach_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except agents.CoachUnavailable as exc:
+        raise HTTPException(503, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/snapshot")
+def get_snapshot():
+    """The figures every agent works from (no AI call)."""
+    return _snapshot(None)
+
+
+@app.get("/api/trip-destinations")
+def get_trip_destinations():
+    return {"destinations": rules_engine.list_destinations()}
+
+
+@app.post("/api/coach")
+def coach(request: CoachRequest):
+    """Chat with the Coach. It hands off to the Buy Advisor / Trip Planner as needed."""
+    return _coach_call(
+        agents.coach_chat,
+        _snapshot(request.profile),
+        request.message,
+        [m.model_dump() for m in request.history],
+    )
+
+
+@app.post("/api/buy-check")
+def buy_check(request: BuyCheckRequest):
+    """'Should I buy this?' Verdict from the rules engine, explanation from Claude."""
+    return _coach_call(
+        agents.buy_check,
+        _snapshot(request.profile),
+        request.item,
+        request.price,
+        request.category,
+    )
+
+
+@app.post("/api/trip-plan")
+def trip_plan(request: TripPlanRequest):
+    """Trip / study-abroad simulator. Costs from the rules engine, explanation from Claude."""
+    return _coach_call(
+        agents.trip_plan,
+        _snapshot(request.profile),
+        request.destination,
+        request.duration_value,
+        request.duration_unit,
+        request.purpose,
+        request.months_until_departure,
+        request.housing_tier,
+    )
+
+
+from fastapi.responses import FileResponse
+
+
+@app.get("/chat", include_in_schema=False)
+def chat_page():
+    """Simple test chat page for the coach."""
+    return FileResponse(os.path.join(os.path.dirname(__file__), "coach", "chat.html"))
+
+
+# -----------------------------
+# TRAINING MODE (teach the coach rules -> coach/coach_rules.md)
+# Only available when the server is started with TRAINING_MODE=1
+# -----------------------------
+
+from fastapi.responses import PlainTextResponse
+
+from coach import training
+
+
+def _require_training_mode():
+    if os.environ.get("TRAINING_MODE") != "1":
+        raise HTTPException(404, "Training mode is off. Start the server with TRAINING_MODE=1.")
+
+
+class TrainRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    history: list[ChatMessage] = []
+
+
+@app.get("/train", include_in_schema=False)
+def train_page():
+    _require_training_mode()
+    return FileResponse(os.path.join(os.path.dirname(__file__), "coach", "chat.html"))
+
+
+@app.post("/api/train")
+def train(request: TrainRequest):
+    _require_training_mode()
+    return _coach_call(agents.train_chat, request.message, [m.model_dump() for m in request.history])
+
+
+@app.get("/api/train/rules", response_class=PlainTextResponse)
+def train_rules():
+    _require_training_mode()
+    return training.rules_markdown()
