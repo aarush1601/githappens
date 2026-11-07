@@ -1,0 +1,6 @@
+[
+  {"merchant":"Campus dining","amount":18.40,"category":"Food","date":"Today"},
+  {"merchant":"Bus & rail","amount":2.40,"category":"Transport","date":"Yesterday"},
+  {"merchant":"Rent transfer","amount":950,"category":"Housing","date":"Nov 1"},
+  {"merchant":"International fee","amount":14.50,"category":"Fees","date":"Oct 30"}
+]
