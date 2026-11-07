@@ -1,0 +1,93 @@
+{
+  "name": "Bill reminder (multilingual)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "bill-reminder",
+        "responseMode": "responseNode"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "bill-reminder"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$input.first().json.body||{};\nconst L=['en','ar','hi','zh','ur','es'].includes(b.lang)?b.lang:'en';\nconst T={\n  en: `Reminder: ${b.bill} (£${b.amount}) is due on ${b.dueDate}. Balance after payment: £${b.balanceAfter}.`,\n  ar: `تذكير: ${b.bill} (£${b.amount}) مستحق في ${b.dueDate}. الرصيد بعد الدفع: £${b.balanceAfter}.`,\n  hi: `याद दिलाना: ${b.bill} (£${b.amount}) की अंतिम तिथि ${b.dueDate} है। भुगतान के बाद बैलेंस: £${b.balanceAfter}।`,\n  zh: `提醒：${b.bill}（£${b.amount}）将于${b.dueDate}到期。付款后余额：£${b.balanceAfter}。`,\n  ur: `یاد دہانی: ${b.bill} (£${b.amount}) کی آخری تاریخ ${b.dueDate} ہے۔ ادائیگی کے بعد بیلنس: £${b.balanceAfter}۔`,\n  es: `Recordatorio: ${b.bill} (£${b.amount}) vence el ${b.dueDate}. Saldo tras el pago: £${b.balanceAfter}.`\n};\nconst D={\"en\": \"Guidance, not regulated financial advice.\", \"ar\": \"إرشاد وليس نصيحة مالية منظمة.\", \"hi\": \"मार्गदर्शन, विनियमित वित्तीय सलाह नहीं।\", \"zh\": \"仅为指导，非受监管的财务建议。\", \"ur\": \"رہنمائی، منظم مالی مشورہ نہیں۔\", \"es\": \"Orientación, no asesoramiento financiero regulado.\"};\nreturn [{json:{message:T[L]+' '+D[L],lang:L}}];"
+      },
+      "name": "Build multilingual message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Send to user (swap for Email/WhatsApp/Telegram node)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, message: $('Build multilingual message').first().json.message }) }}"
+      },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        780,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Build multilingual message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build multilingual message": {
+      "main": [
+        [
+          {
+            "node": "Send to user (swap for Email/WhatsApp/Telegram node)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to user (swap for Email/WhatsApp/Telegram node)": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
