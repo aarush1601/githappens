@@ -1,8 +1,9 @@
 {
-  "name": "student-coach-server",
-  "private": true,
+  "name": "server",
   "version": "1.0.0",
   "type": "module",
-  "scripts": { "start": "node index.js", "dev": "node --watch index.js", "test": "node --test *.test.js" },
-  "dependencies": { "cors": "^2.8.5", "express": "^4.21.2" }
+  "scripts": {
+    "start": "node --env-file=.env index.js",
+    "dev": "node --watch --env-file=.env index.js"
+  }
 }
