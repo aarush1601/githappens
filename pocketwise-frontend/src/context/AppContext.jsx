@@ -1,0 +1,7 @@
+import {createContext,useContext,useEffect,useMemo,useState} from 'react';
+import {starterAccounts,starterBudgets,starterGoals,starterTransactions} from '../data/mockData';
+const Context=createContext(null);const read=(key,fallback)=>{try{const v=localStorage.getItem(key);return v?JSON.parse(v):fallback}catch{return fallback}};
+export function AppProvider({children}){const [transactions,setTransactions]=useState(()=>read('pw-transactions',starterTransactions));const [budgets,setBudgets]=useState(()=>read('pw-budgets',starterBudgets));const [goals,setGoals]=useState(()=>read('pw-goals',starterGoals));const [accounts,setAccounts]=useState(()=>read('pw-accounts',starterAccounts));const [currency,setCurrency]=useState(()=>read('pw-currency','GBP'));const [theme,setTheme]=useState(()=>read('pw-theme','light'));const [tourDone,setTourDone]=useState(()=>read('pw-tour',false));
+useEffect(()=>{for(const [k,v] of Object.entries({'pw-transactions':transactions,'pw-budgets':budgets,'pw-goals':goals,'pw-accounts':accounts,'pw-currency':currency,'pw-theme':theme,'pw-tour':tourDone}))localStorage.setItem(k,JSON.stringify(v))},[transactions,budgets,goals,accounts,currency,theme,tourDone]);
+const value=useMemo(()=>({transactions,setTransactions,budgets,setBudgets,goals,setGoals,accounts,setAccounts,currency,setCurrency,theme,setTheme,tourDone,setTourDone}),[transactions,budgets,goals,accounts,currency,theme,tourDone]);return <Context.Provider value={value}>{children}</Context.Provider>}
+export const useApp=()=>useContext(Context);

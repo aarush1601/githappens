@@ -1,0 +1,3 @@
+export const isThisMonth=(date)=>{const d=new Date(`${date}T12:00:00`),n=new Date();return d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear()};
+export function totals(transactions){const month=transactions.filter(t=>isThisMonth(t.date));const income=month.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);const expenses=month.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);return {income,expenses,savings:income-expenses,balance:transactions.reduce((s,t)=>s+(t.type==='income'?t.amount:-t.amount),0)}}
+export function categorySpend(transactions,category){return transactions.filter(t=>t.type==='expense'&&t.category===category&&isThisMonth(t.date)).reduce((s,t)=>s+t.amount,0)}
